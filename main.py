@@ -11,9 +11,9 @@ import csv
 import os
 from openpyxl import Workbook, load_workbook
 
-# Setup driver Chrome con webdriver-manager
+# Configurazione Chrome Driver con webdriver-manager
 options = Options()
-# options.add_argument('--headless')  # scommenta per far girare senza GUI
+# options.add_argument('--headless')  # scommenta per esecuzione in background senza GUI
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
 wait = WebDriverWait(driver, 20)
@@ -24,31 +24,6 @@ driver.get(start_url)
 csv_filename = 'cocktailbars.csv'
 excel_filename = 'cocktailbars.xlsx'
 
-
-def load_all_results():
-    """Clicca ripetutamente su 'Mehr Anzeigen' fino a che il bottone non è più presente."""
-    print("Caricamento di tutti i risultati...")
-    while True:
-        try:
-            load_more_btn = wait.until(EC.element_to_be_clickable((By.ID, 'mod-LoadMore--button')))
-            print("Clicco su 'Mehr Anzeigen' per caricare altri risultati...")
-            driver.execute_script("arguments[0].scrollIntoView(true);", load_more_btn)  # Scrolla al bottone
-            load_more_btn.click()
-            # Attendi che nuovi risultati vengano caricati
-            # Qui aspettiamo che il bottone "Mehr Anzeigen" sparisca o che vengano aumentati gli articoli
-            time.sleep(2)  # piccola pausa per stabilità
-            wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, 'article.mod-Treffer')) > 0)
-            # Proviamo a vedere se il bottone appare di nuovo in 5s, altrimenti esci
-            try:
-                wait.until(EC.element_to_be_clickable((By.ID, 'mod-LoadMore--button')), timeout=5)
-            except:
-                print("Pulsante 'Mehr Anzeigen' non più visibile.")
-                break
-        except Exception:
-            print("Nessun altro pulsante 'Mehr Anzeigen' trovato o errore, termino caricamento.")
-            break
-
-
 def save_to_csv(row, fieldnames):
     file_exists = os.path.isfile(csv_filename)
     with open(csv_filename, mode='a', newline='', encoding='utf-8') as csvfile:
@@ -56,7 +31,6 @@ def save_to_csv(row, fieldnames):
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
-
 
 def save_to_excel(row):
     if os.path.exists(excel_filename):
@@ -66,15 +40,43 @@ def save_to_excel(row):
         workbook = Workbook()
         sheet = workbook.active
         sheet.append(['Nome', 'Indirizzo', 'Telefono', 'Sito Web', 'Email', 'Link Dettaglio'])
-
     sheet.append([row['Nome'], row['Indirizzo'], row['Telefono'], row['Sito Web'], row['Email'], row['Link Dettaglio']])
     workbook.save(excel_filename)
 
+def load_all_results():
+    print("Caricamento di tutti i risultati cliccando il link 'Mehr Anzeigen'...")
+    previous_count = 0
+    while True:
+        bars = driver.find_elements(By.CSS_SELECTOR, 'article.mod-Treffer')
+        current_count = len(bars)
+        print(f"Voci trovati finora: {current_count}")
+        if current_count == previous_count:
+            print("Nessuna nuova voce caricata cliccando il pulsante avanti 'Mehr Anzeigen', terminato.")
+            break
+        previous_count = current_count
+        try:
+            load_more_link = wait.until(
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, 'a#mod-LoadMore--button.mod-LoadMore--button')
+                )
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", load_more_link)
+            # Scrolla un po’ sopra per evitare overlay fissi
+            driver.execute_script("window.scrollBy(0, -100);")
+            time.sleep(1)
+            # Clicca con JS per evitare intercettazioni di click
+            driver.execute_script("arguments[0].click();", load_more_link)
+            time.sleep(3)  # attesa caricamento dati
+        except Exception as e:
+            print(f"Errore cliccando il link 'Mehr Anzeigen' o non più presente: {e}")
+            break
 
-print("Inizio caricamento completo dei risultati...")
+print("Caricamento iniziale pagina e risultati completi...")
+time.sleep(3)
+
 load_all_results()
 
-print("Parsing pagina...")
+print("Parsing pagina con tutti i risultati caricati...")
 soup = BeautifulSoup(driver.page_source, 'html.parser')
 bars = soup.find_all('article', class_='mod-Treffer')
 
@@ -102,21 +104,18 @@ for index, bar in enumerate(bars, start=1):
         email = ''
 
         if dettaglio_link:
-            # Vai alla pagina dettaglio
             driver.get(dettaglio_link)
             try:
-                wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'aktionsleiste-button')))
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.aktionsleiste-button')))
             except Exception:
-                pass  # se non c'è non bloccare
+                pass
 
             detail_soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-            # Estraggo il sito web
             sito_tag = detail_soup.select_one('div.aktionsleiste-button a[href]')
             if sito_tag:
                 sito_web = sito_tag['href']
 
-            # Estraggo l'email se presente
             email_button = detail_soup.find('div', id='email_versenden')
             if email_button:
                 data_link = email_button.get('data-link', '')
@@ -141,7 +140,7 @@ for index, bar in enumerate(bars, start=1):
         save_to_excel(row)
 
     except Exception as e:
-        print(f"Errore elaborazione bar '{nome}': {e}")
+        print(f"Errore durante l'elaborazione del bar '{nome}': {e}")
 
 driver.quit()
 print("Scraping completato! File CSV e Excel salvati.")
