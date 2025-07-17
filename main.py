@@ -13,10 +13,10 @@ from openpyxl import Workbook, load_workbook
 
 # Configurazione Chrome Driver con webdriver-manager
 options = Options()
-# options.add_argument('--headless')  # scommenta per esecuzione in background senza GUI
+# options.add_argument('--headless')  # scommenta per esecuzione senza GUI
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
-wait = WebDriverWait(driver, 20)
+wait = WebDriverWait(driver, 30)  # timeout più lungo
 
 start_url = "https://www.gelbeseiten.de/suche/cocktailbars/bundesweit"
 driver.get(start_url)
@@ -49,9 +49,9 @@ def load_all_results():
     while True:
         bars = driver.find_elements(By.CSS_SELECTOR, 'article.mod-Treffer')
         current_count = len(bars)
-        print(f"Voci trovati finora: {current_count}")
+        print(f"Articoli trovati finora: {current_count}")
         if current_count == previous_count:
-            print("Nessuna nuova voce caricata cliccando il pulsante avanti 'Mehr Anzeigen', terminato.")
+            print("Nessun nuovo articolo caricato; termino caricamento.")
             break
         previous_count = current_count
         try:
@@ -61,15 +61,15 @@ def load_all_results():
                 )
             )
             driver.execute_script("arguments[0].scrollIntoView(true);", load_more_link)
-            # Scrolla un po’ sopra per evitare overlay fissi
-            driver.execute_script("window.scrollBy(0, -100);")
+            driver.execute_script("window.scrollBy(0, -100);")  # scrolla sopra per evitare overlay
             time.sleep(1)
-            # Clicca con JS per evitare intercettazioni di click
             driver.execute_script("arguments[0].click();", load_more_link)
-            time.sleep(3)  # attesa caricamento dati
+            time.sleep(3)
         except Exception as e:
-            print(f"Errore cliccando il link 'Mehr Anzeigen' o non più presente: {e}")
+            print(f"Errore cliccando il link 'Mehr Anzeigen' o link non più presente: {e}")
             break
+
+fieldnames = ['Nome', 'Indirizzo', 'Telefono', 'Sito Web', 'Email', 'Link Dettaglio']
 
 print("Caricamento iniziale pagina e risultati completi...")
 time.sleep(3)
@@ -80,7 +80,7 @@ print("Parsing pagina con tutti i risultati caricati...")
 soup = BeautifulSoup(driver.page_source, 'html.parser')
 bars = soup.find_all('article', class_='mod-Treffer')
 
-fieldnames = ['Nome', 'Indirizzo', 'Telefono', 'Sito Web', 'Email', 'Link Dettaglio']
+MAX_RETRIES = 3
 
 print(f"Trovati {len(bars)} bar. Inizio estrazione dati...")
 
@@ -104,27 +104,48 @@ for index, bar in enumerate(bars, start=1):
         email = ''
 
         if dettaglio_link:
-            driver.get(dettaglio_link)
-            try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.aktionsleiste-button')))
-            except Exception:
-                pass
+            # Retry per apertura pagina dettaglio
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    driver.get(dettaglio_link)
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.aktionsleiste-button')))
+                    break
+                except Exception as e:
+                    print(f"Tentativo {attempt} per caricare {dettaglio_link} fallito: {e}")
+                    if attempt == MAX_RETRIES:
+                        print(f"Salto la pagina dettaglio di '{nome}' dopo {MAX_RETRIES} tentativi.")
+                        sito_web = ''
+                        email = ''
+                        break
+                    time.sleep(3)
 
-            detail_soup = BeautifulSoup(driver.page_source, 'html.parser')
+            if sito_web == '' and attempt < MAX_RETRIES:
+                detail_soup = BeautifulSoup(driver.page_source, 'html.parser')
 
-            sito_tag = detail_soup.select_one('div.aktionsleiste-button a[href]')
-            if sito_tag:
-                sito_web = sito_tag['href']
+                sito_tag = detail_soup.select_one('div.aktionsleiste-button a[href]')
+                if sito_tag:
+                    sito_web = sito_tag['href']
 
-            email_button = detail_soup.find('div', id='email_versenden')
-            if email_button:
-                data_link = email_button.get('data-link', '')
-                if data_link.startswith('mailto:'):
-                    email = data_link.split(':')[1].split('?')[0]
+                email_button = detail_soup.find('div', id='email_versenden')
+                if email_button:
+                    data_link = email_button.get('data-link', '')
+                    if data_link.startswith('mailto:'):
+                        email = data_link.split(':')[1].split('?')[0]
 
-            driver.back()
-            wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'mod-Treffer')))
-            time.sleep(1)
+            # Retry per tornare indietro
+            for back_attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    driver.back()
+                    wait.until(EC.presence_of_element_located((By.CLASS_NAME, 'mod-Treffer')))
+                    time.sleep(1)
+                    break
+                except Exception as e:
+                    print(f"Errore al tornare indietro, tentativo {back_attempt}: {e}")
+                    if back_attempt == MAX_RETRIES:
+                        print("Impossibile tornare indietro, chiudo browser e termino.")
+                        driver.quit()
+                        exit(1)
+                    time.sleep(2)
 
         row = {
             'Nome': nome,
